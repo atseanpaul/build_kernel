@@ -54,7 +54,7 @@ class Builder(object):
     if not self.output_path.is_dir():
       self.output_path.mkdir()
 
-  
+
   def __run_command(self, args):
     print('')
     print('#############################################################')
@@ -168,7 +168,7 @@ def main():
 
   builder = Builder(args.config)
   builder.do_build()
-  
+
 
 if __name__ == '__main__':
   main()
