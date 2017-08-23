@@ -73,14 +73,19 @@ class Builder(object):
       raise subprocess.CalledProcessError(p.returncode, args)
 
 
-  def __run_make(self, flags=[], env={}, targets=[]):
+  def __run_make(self, flags=[], env={}, targets=[], root=False):
     new_env = {}
     new_env['ARCH'] = self.kernel_arch
     new_env['CROSS_COMPILE'] = self.cross_compile
     new_env['O'] = str(self.output_path)
     new_env.update(env)
 
-    args = ['make']
+    args = []
+    if root:
+      args = ['sudo']
+
+    args = args + ['make']
+
     # kernel Makefile is inconsistent with which arguments can be set as env
     # variables, and which are cmdline assignments. So make all env cmdline
     # assignments
@@ -107,12 +112,6 @@ class Builder(object):
 
   def __make(self):
     self.__run_make(targets=['Image', 'modules', 'dtbs'])
-    if self.install_modules:
-      self.__run_make(env={ 'INSTALL_MOD_PATH': str(self.output_path) },
-                      targets=['modules_install'])
-    if self.install_dtbs:
-      self.__run_make(env={ 'INSTALL_DTBS_PATH': str(self.output_path) },
-                      targets=['dtbs_install'])
     if self.generate_htmldocs:
       self.__run_make(targets=['htmldocs'])
 
@@ -193,12 +192,12 @@ class Builder(object):
         'UUID={}'.format(self.root_uuid),
         mount_pt])
       try:
-        self.__run_command([
-          'sudo',
-          'rsync',
-          '-ac', '-P', '--safe-links',
-          '{}'.format(str(self.output_path.joinpath('/lib/modules/'))),
-          '{}'.format(str(pathlib.Path(mount_pt).joinpath('/usr/modules/')))])
+        if self.install_modules:
+          self.__run_make(env={ 'INSTALL_MOD_PATH': mount_pt },
+                          targets=['modules_install'], root=True)
+        if self.install_dtbs:
+          self.__run_make(env={ 'INSTALL_DTBS_PATH': mount_pt },
+                          targets=['dtbs_install'], root=True)
       finally:
         self.__run_command([
           'sudo',
