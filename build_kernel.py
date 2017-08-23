@@ -8,6 +8,8 @@ import configparser
 import os
 import pathlib
 import subprocess
+import tempfile
+import time
 
 class Builder(object):
   def __init__(self, ini_path):
@@ -53,6 +55,8 @@ class Builder(object):
                                 '.build_{}'.format(self.kernel_arch))
     if not self.output_path.is_dir():
       self.output_path.mkdir()
+
+    self.packed_kernel = self.output_path.joinpath('vmlinux.kpart')
 
 
   def __run_command(self, args):
@@ -141,10 +145,9 @@ class Builder(object):
     with cmdline.open('w') as f:
       f.write(self.cmdline)
 
-    packed = self.output_path.joinpath('vmlinux.kpart')
     self.__run_command([
       self.vbutil_kernel,
-      '--pack', str(packed),
+      '--pack', str(self.packed_kernel),
       '--version', '1',
       '--vmlinuz', str(uimg),
       '--arch', self.vbutil_arch,
@@ -154,10 +157,60 @@ class Builder(object):
       '--bootloader', str(zero)])
 
 
+  def __flash(self):
+    if not self.kernel_part_uuid:
+      return
+
+    path = '/dev/disk/by-partuuid/{}'.format(self.kernel_part_uuid)
+    kernel_part = pathlib.Path(path)
+    if not kernel_part.is_block_device():
+      print('Insert your USB key...')
+      while not kernel_part.is_block_device():
+        time.sleep(2)
+
+    # Flash kernel to USB drive
+    self.__run_command([
+      'sudo',
+      'dd',
+      'if={}'.format(str(self.packed_kernel)),
+      'of={}'.format(str(kernel_part))])
+    self.__run_command(['sync'])
+
+    if not self.root_uuid:
+      return
+
+    # Copy modules to rootfs
+    root = pathlib.Path('/dev/disk/by-uuid/{}'.format(self.root_uuid))
+    if not root.is_block_device():
+      print('Insert your USB key...')
+      while not kernel_part.is_block_device():
+        time.sleep(2)
+
+    with tempfile.TemporaryDirectory() as mount_pt:
+      self.__run_command([
+        'sudo',
+        'mount',
+        'UUID={}'.format(self.root_uuid),
+        mount_pt])
+      try:
+        self.__run_command([
+          'sudo',
+          'rsync',
+          '-ac', '-P', '--safe-links',
+          '{}'.format(str(self.output_path.joinpath('/lib/modules/'))),
+          '{}'.format(str(pathlib.Path(mount_pt).joinpath('/usr/modules/')))])
+      finally:
+        self.__run_command([
+          'sudo',
+          'umount',
+          mount_pt])
+
+
   def do_build(self):
     self.__configure()
     self.__make()
     self.__package()
+    self.__flash()
 
 
 def main():
