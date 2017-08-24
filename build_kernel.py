@@ -108,6 +108,7 @@ class Builder(object):
       with config_src_path.open() as s:
         with config_dst_path.open(mode='w') as d:
           d.write(s.read())
+      self.__run_make(targets=['olddefconfig'])
 
 
   def __make(self):
