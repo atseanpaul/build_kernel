@@ -107,11 +107,11 @@ class Builder(object):
       config_dst_path = self.output_path.joinpath('.config')
       with config_src_path.open() as s:
         with config_dst_path.open(mode='w') as d:
-          d.write(r.read())
+          d.write(s.read())
 
 
   def __make(self):
-    self.__run_make(targets=['Image', 'modules', 'dtbs'])
+    self.__run_make(targets=['all'])
     if self.generate_htmldocs:
       self.__run_make(targets=['htmldocs'])
 
