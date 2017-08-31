@@ -12,7 +12,7 @@ import tempfile
 import time
 
 class Builder(object):
-  def __init__(self, ini_path):
+  def __init__(self, ini_path, generate_compile_db):
     cp = configparser.SafeConfigParser(
             defaults={'kernel_part_uuid': None,
                       'root_uuid': None,
@@ -50,9 +50,15 @@ class Builder(object):
     self.install_modules = cp.getboolean('build', 'install_modules')
     self.install_dtbs = cp.getboolean('build', 'install_dtbs')
     self.generate_htmldocs = cp.getboolean('build', 'generate_htmldocs')
+    self.generate_compile_db = generate_compile_db
 
-    self.output_path = pathlib.Path.cwd().joinpath(
-                                '.build_{}'.format(self.kernel_arch))
+    if generate_compile_db:
+        self.output_path = pathlib.Path.cwd().joinpath(
+                                    '.bear_{}'.format(self.kernel_arch))
+    else:
+        self.output_path = pathlib.Path.cwd().joinpath(
+                                    '.build_{}'.format(self.kernel_arch))
+
     if not self.output_path.is_dir():
       self.output_path.mkdir()
 
@@ -73,7 +79,7 @@ class Builder(object):
       raise subprocess.CalledProcessError(p.returncode, args)
 
 
-  def __run_make(self, flags=[], env={}, targets=[], root=False):
+  def __run_make(self, flags=[], env={}, targets=[], root=False, bear=False):
     new_env = {}
     new_env['ARCH'] = self.kernel_arch
     new_env['CROSS_COMPILE'] = self.cross_compile
@@ -83,6 +89,8 @@ class Builder(object):
     args = []
     if root:
       args = ['sudo']
+    if bear:
+      args = args + ['bear']
 
     args = args + ['make']
 
@@ -112,7 +120,9 @@ class Builder(object):
 
 
   def __make(self):
-    self.__run_make(targets=['all'])
+    self.__run_make(targets=['all'], bear=self.generate_compile_db)
+    if self.install_dtbs:
+      self.__run_make(targets=['dtbs'])
     if self.generate_htmldocs:
       self.__run_make(targets=['htmldocs'])
 
@@ -207,19 +217,26 @@ class Builder(object):
 
 
   def do_build(self):
+    if self.generate_compile_db:
+        self.__run_make(targets=['mrproper'])
+
     self.__configure()
     self.__make()
-    self.__package()
-    self.__flash()
+
+    if not self.generate_compile_db:
+        self.__package()
+        self.__flash()
 
 
 def main():
   parser = argparse.ArgumentParser(description='Build a kernel')
   parser.add_argument('--config', default='build.ini',
                       help='Optional build config path override')
+  parser.add_argument('--gen_compile_db', default=False, action='store_true',
+                      help='Use bear to generate a compilation database')
   args = parser.parse_args()
 
-  builder = Builder(args.config)
+  builder = Builder(args.config, args.gen_compile_db)
   builder.do_build()
 
 
