@@ -7,12 +7,14 @@ import argparse
 import configparser
 import os
 import pathlib
+import re
 import subprocess
 import tempfile
 import time
 
 class Builder(object):
-  def __init__(self, ini_path, generate_compile_db):
+  def __init__(self, ini_path, generate_compile_db, generage_pkg,
+               fail_on_stderr):
     cp = configparser.SafeConfigParser(
             defaults={'kernel_part_uuid': None,
                       'root_uuid': None,
@@ -50,7 +52,9 @@ class Builder(object):
     self.install_modules = cp.getboolean('build', 'install_modules')
     self.install_dtbs = cp.getboolean('build', 'install_dtbs')
     self.generate_htmldocs = cp.getboolean('build', 'generate_htmldocs')
+    self.generate_pkg = generage_pkg
     self.generate_compile_db = generate_compile_db
+    self.fail_on_stderr = fail_on_stderr
 
     if generate_compile_db:
         self.output_path = pathlib.Path.cwd().joinpath(
@@ -65,17 +69,39 @@ class Builder(object):
     self.packed_kernel = self.output_path.joinpath('vmlinux.kpart')
 
 
-  def __run_command(self, args):
+  def __run_command(self, args, fail_on_stderr = False):
     print('')
     print('#############################################################')
     print('#')
     print('# {}'.format(args))
     print('#')
-    p = subprocess.Popen(args=args,stdout=subprocess.PIPE)
+    drm_re = re.compile('drivers/gpu/drm')
+    drm_stderr = []
+    p = subprocess.Popen(args=args,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     for l in iter(p.stdout.readline, b''):
       print(l.rstrip().decode('utf-8'))
+
+    stderr = False
+    for l in iter(p.stderr.readline, b''):
+      line = l.rstrip().decode('utf-8')
+      print(line)
+      if drm_re.search(line):
+          drm_stderr.append(line)
+      stderr = True;
+
     p.wait()
-    if p.returncode != 0:
+
+    if len(drm_stderr):
+      print('***********************************************************')
+      print('*')
+      print('*              DRM WARNINGS/ERRORS')
+      print('*')
+      for l in drm_stderr:
+        print(l)
+      print('***********************************************************')
+      raise subprocess.CalledProcessError(p.returncode, args)
+
+    if p.returncode != 0 or (fail_on_stderr and stderr):
       raise subprocess.CalledProcessError(p.returncode, args)
 
 
@@ -84,6 +110,7 @@ class Builder(object):
     new_env['ARCH'] = self.kernel_arch
     new_env['CROSS_COMPILE'] = self.cross_compile
     new_env['O'] = str(self.output_path)
+    #new_env['EXTRA_CFLAGS'] = '-Werror'
     new_env.update(env)
 
     args = []
@@ -102,7 +129,7 @@ class Builder(object):
 
     args.append('-j{}'.format(self.jobs))
     args = args + flags +  targets
-    self.__run_command(args)
+    self.__run_command(args, fail_on_stderr=self.fail_on_stderr)
 
 
   def __configure(self):
@@ -120,7 +147,11 @@ class Builder(object):
 
 
   def __make(self):
-    self.__run_make(targets=['all'], bear=self.generate_compile_db)
+    if self.generate_pkg and not self.generate_compile_db:
+      self.__run_make(targets=['bindeb-pkg'])
+    else:
+      self.__run_make(targets=['all'], bear=self.generate_compile_db)
+
     if self.install_dtbs:
       self.__run_make(targets=['dtbs'])
     if self.generate_htmldocs:
@@ -234,9 +265,14 @@ def main():
                       help='Optional build config path override')
   parser.add_argument('--gen_compile_db', default=False, action='store_true',
                       help='Use bear to generate a compilation database')
+  parser.add_argument('--gen_pkg', default=False, action='store_true',
+                      help='Generate deb packages')
+  parser.add_argument('--nofail_on_stderr', default=True, action='store_false',
+                      help='Fail command on stderr')
   args = parser.parse_args()
 
-  builder = Builder(args.config, args.gen_compile_db)
+  builder = Builder(args.config, args.gen_compile_db, args.gen_pkg,
+                    args.nofail_on_stderr)
   builder.do_build()
 
 
