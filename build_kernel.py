@@ -27,7 +27,8 @@ class Builder(object):
                       'cmdline': None,
                       'vbutil_arch': None,
                       'mkimage': None,
-                      'its_file': None
+                      'its_file': None,
+                      'completion_text': None
             })
     cp.read(ini_path)
 
@@ -52,17 +53,26 @@ class Builder(object):
     self.install_modules = cp.getboolean('build', 'install_modules')
     self.install_dtbs = cp.getboolean('build', 'install_dtbs')
     self.generate_htmldocs = cp.getboolean('build', 'generate_htmldocs')
+    self.completion_text = cp.get('build', 'completion_text')
+
     self.generate_pkg = generage_pkg
     self.generate_compile_db = generate_compile_db
     self.fail_on_stderr = fail_on_stderr
 
-    if generate_compile_db:
-        self.output_path = pathlib.Path.cwd().joinpath(
-                                    '.bear_{}'.format(self.kernel_arch))
-    else:
-        self.output_path = pathlib.Path.cwd().joinpath(
-                                    '.build_{}'.format(self.kernel_arch))
+    if self.defconfig and self.config_file:
+      raise ValueError('Specifying both defconfig and config_file is invalid')
 
+    if self.defconfig:
+      postfix = self.defconfig
+    else:
+      postfix = pathlib.PurePath(self.config_file).name
+    if generate_compile_db:
+      prefix = 'bear'
+    else:
+      prefix = 'build'
+
+    self.output_path = pathlib.Path.cwd().joinpath(
+                          '.{}_{}-{}'.format(prefix, self.kernel_arch, postfix))
     if not self.output_path.is_dir():
       self.output_path.mkdir()
 
@@ -91,15 +101,18 @@ class Builder(object):
 
     p.wait()
 
+    print('***********************************************************')
+    print('*')
     if len(drm_stderr):
-      print('***********************************************************')
-      print('*')
       print('*              DRM WARNINGS/ERRORS')
-      print('*')
       for l in drm_stderr:
         print(l)
       print('***********************************************************')
       raise subprocess.CalledProcessError(p.returncode, args)
+    else:
+      print('*              DRM BUILD IS CLEAN')
+    print('*')
+    print('***********************************************************')
 
     if p.returncode != 0 or (fail_on_stderr and stderr):
       raise subprocess.CalledProcessError(p.returncode, args)
@@ -258,11 +271,14 @@ class Builder(object):
         self.__package()
         self.__flash()
 
+    if self.completion_text:
+        print(self.completion_text)
+
 
 def main():
   parser = argparse.ArgumentParser(description='Build a kernel')
-  parser.add_argument('--config', default='build.ini',
-                      help='Optional build config path override')
+  parser.add_argument('--config', help='Optional build config path override',
+                      action='append')
   parser.add_argument('--gen_compile_db', default=False, action='store_true',
                       help='Use bear to generate a compilation database')
   parser.add_argument('--gen_pkg', default=False, action='store_true',
@@ -271,9 +287,10 @@ def main():
                       help='Fail command on stderr')
   args = parser.parse_args()
 
-  builder = Builder(args.config, args.gen_compile_db, args.gen_pkg,
-                    args.nofail_on_stderr)
-  builder.do_build()
+  for c in args.config:
+    builder = Builder(c, args.gen_compile_db, args.gen_pkg,
+                      args.nofail_on_stderr)
+    builder.do_build()
 
 
 if __name__ == '__main__':
