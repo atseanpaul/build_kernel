@@ -83,7 +83,7 @@ class Builder(object):
     print('')
     print('#############################################################')
     print('#')
-    print('# {}'.format(args))
+    print('# {}'.format(' '.join(args)))
     print('#')
     drm_re = re.compile('drivers/gpu/drm')
     drm_stderr = []
@@ -283,13 +283,13 @@ def main():
                       help='Use bear to generate a compilation database')
   parser.add_argument('--gen_pkg', default=False, action='store_true',
                       help='Generate deb packages')
-  parser.add_argument('--nofail_on_stderr', default=True, action='store_false',
+  parser.add_argument('--nofail_on_stderr', default=False, action='store_false',
                       help='Fail command on stderr')
   args = parser.parse_args()
 
   for c in args.config:
     builder = Builder(c, args.gen_compile_db, args.gen_pkg,
-                      args.nofail_on_stderr)
+                      not args.nofail_on_stderr)
     builder.do_build()
 
 
