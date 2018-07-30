@@ -13,6 +13,11 @@ import tempfile
 import time
 
 class Builder(object):
+
+  stderr_ignore = [
+    re.compile('#warning syscall (io_pgetevents|rseq) not implemented'),
+  ]
+
   def __init__(self, ini_path, generate_compile_db, generage_pkg,
                fail_on_stderr):
     cp = configparser.SafeConfigParser(
@@ -94,6 +99,16 @@ class Builder(object):
     stderr = False
     for l in iter(p.stderr.readline, b''):
       line = l.rstrip().decode('utf-8')
+
+      ignore = False
+      for r in self.stderr_ignore:
+        if r.search(line):
+          print('IGNORE: {}'. format(line))
+          ignore = True
+          break
+      if ignore:
+        continue
+
       print(line)
       if drm_re.search(line):
           drm_stderr.append(line)
