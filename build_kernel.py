@@ -10,6 +10,7 @@ import pathlib
 import re
 import subprocess
 import tempfile
+import threading
 import time
 
 class Builder(object):
@@ -73,6 +74,8 @@ class Builder(object):
       postfix = pathlib.PurePath(self.config_file).name
     if generate_compile_db:
       prefix = 'bear'
+    elif self.generate_htmldocs:
+      prefix = 'htmldocs'
     else:
       prefix = 'build'
 
@@ -83,6 +86,39 @@ class Builder(object):
 
     self.packed_kernel = self.output_path.joinpath('vmlinux.kpart')
 
+  def __output_thread(self, pipe, output):
+      for l in iter(pipe.readline, b''):
+        line = l.rstrip().decode('utf-8')
+        print(line)
+        if output != None:
+          output.append(line)
+
+
+  def prompt_user(self, prompt):
+    while True:
+      reply = str(input(prompt + ' (y/n): ')).lower().strip()
+      if reply[0] == 'y':
+        return True
+      if reply[0] == 'n':
+        return False
+
+
+  def __print_errors(self, prefix, errors):
+    print('***********************************************************')
+    print('*')
+    if errors:
+      print('*              {} WARNINGS/ERRORS'.format(prefix))
+      print('*')
+      for l in errors:
+        print(l)
+      print('*')
+      print('***********************************************************')
+      if not self.prompt_user('Would you like to continue?'):
+        raise subprocess.CalledProcessError(1, args)
+    else:
+      print('*              {} BUILD IS CLEAN'.format(prefix))
+      print('*')
+      print('***********************************************************')
 
   def __run_command(self, args, fail_on_stderr = False):
     print('')
@@ -90,47 +126,44 @@ class Builder(object):
     print('#')
     print('# {}'.format(' '.join(args)))
     print('#')
+    p = subprocess.Popen(args=args, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE)
+
+    stdout_thread = threading.Thread(target=self.__output_thread,
+                                     args=(p.stdout, None))
+
+    stderr = []
+    stderr_thread = threading.Thread(target=self.__output_thread,
+                                     args=(p.stderr, stderr))
+
+    stdout_thread.start()
+    stderr_thread.start()
+    p.wait()
+    stdout_thread.join()
+    stderr_thread.join()
+
     drm_re = re.compile('drivers/gpu/drm')
     drm_stderr = []
-    p = subprocess.Popen(args=args,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-    for l in iter(p.stdout.readline, b''):
-      print(l.rstrip().decode('utf-8'))
-
-    stderr = False
-    for l in iter(p.stderr.readline, b''):
-      line = l.rstrip().decode('utf-8')
-
+    other_stderr = []
+    for l in stderr:
       ignore = False
       for r in self.stderr_ignore:
-        if r.search(line):
-          print('IGNORE: {}'. format(line))
+        if r.search(l):
+          print('IGNORE: {}'. format(l))
           ignore = True
           break
       if ignore:
         continue
+      if drm_re.search(l):
+        drm_stderr.append(l)
+      else:
+        other_stderr.append(l)
 
-      print(line)
-      if drm_re.search(line):
-          drm_stderr.append(line)
-      stderr = True;
-
-    p.wait()
-
-    print('***********************************************************')
-    print('*')
-    if len(drm_stderr):
-      print('*              DRM WARNINGS/ERRORS')
-      for l in drm_stderr:
-        print(l)
-      print('***********************************************************')
-      raise subprocess.CalledProcessError(p.returncode, args)
-    else:
-      print('*              DRM BUILD IS CLEAN')
-    print('*')
-    print('***********************************************************')
-
-    if p.returncode != 0 or (fail_on_stderr and stderr):
-      raise subprocess.CalledProcessError(p.returncode, args)
+    self.__print_errors('DRM', drm_stderr)
+    self.__print_errors('KERNEL', other_stderr)
+    if p.returncode != 0:
+      if not self.prompt_user('Build failed, would you like to continue?'):
+        raise subprocess.CalledProcessError(p.returncode, args)
 
 
   def __run_make(self, flags=[], env={}, targets=[], root=False, bear=False):
@@ -177,13 +210,13 @@ class Builder(object):
   def __make(self):
     if self.generate_pkg and not self.generate_compile_db:
       self.__run_make(targets=['bindeb-pkg'])
+    elif self.generate_htmldocs:
+      self.__run_make(targets=['htmldocs'])
     else:
       self.__run_make(targets=['all'], bear=self.generate_compile_db)
 
     if self.install_dtbs:
       self.__run_make(targets=['dtbs'])
-    if self.generate_htmldocs:
-      self.__run_make(targets=['htmldocs'])
 
 
   def __package(self):
