@@ -19,14 +19,14 @@ class Builder(object):
     re.compile('#warning syscall (io_pgetevents|rseq) not implemented'),
   ]
 
-  def __init__(self, ini_path, generate_compile_db, generage_pkg,
-               fail_on_stderr):
+  def __init__(self, ini_path, generate_compile_db, generate_pkg,
+               fail_on_stderr, kselftest=False):
     cp = configparser.SafeConfigParser(
             defaults={'kernel_part_uuid': None,
                       'root_uuid': None,
                       'defconfig': None,
                       'config_file': None,
-                      'jobs': 1,
+                      'jobs': '1',
                       'vbutil_kernel': None,
                       'keyblock': None,
                       'data_key': None,
@@ -34,12 +34,18 @@ class Builder(object):
                       'vbutil_arch': None,
                       'mkimage': None,
                       'its_file': None,
-                      'completion_text': None
-            })
+                      'completion_text': None,
+                      'install_headers': 'no',
+            }, allow_no_value=True)
     cp.read(ini_path)
 
     self.kernel_part_uuid = cp.get('target', 'kernel_part_uuid', raw=True)
+    if self.kernel_part_uuid:
+        self.kernel_part_uuid = self.kernel_part_uuid.lower()
+
     self.root_uuid = cp.get('target', 'root_uuid', raw=True)
+    if self.root_uuid:
+        self.root_uuid = self.root_uuid.lower()
 
     self.defconfig = cp.get('build', 'defconfig', raw=True)
     self.config_file = cp.get('build', 'config_file', raw=True)
@@ -58,12 +64,14 @@ class Builder(object):
 
     self.install_modules = cp.getboolean('build', 'install_modules')
     self.install_dtbs = cp.getboolean('build', 'install_dtbs')
+    self.install_headers = cp.getboolean('build', 'install_headers')
     self.generate_htmldocs = cp.getboolean('build', 'generate_htmldocs')
     self.completion_text = cp.get('build', 'completion_text')
 
-    self.generate_pkg = generage_pkg
+    self.generate_pkg = generate_pkg
     self.generate_compile_db = generate_compile_db
     self.fail_on_stderr = fail_on_stderr
+    self.kselftest = kselftest
 
     if self.defconfig and self.config_file:
       raise ValueError('Specifying both defconfig and config_file is invalid')
@@ -72,10 +80,11 @@ class Builder(object):
       postfix = self.defconfig
     else:
       postfix = pathlib.PurePath(self.config_file).name
-    if generate_compile_db:
-      prefix = 'bear'
-    elif self.generate_htmldocs:
+
+    if self.generate_htmldocs:
       prefix = 'htmldocs'
+    elif self.kselftest:
+      prefix = 'kselftest'
     else:
       prefix = 'build'
 
@@ -83,6 +92,8 @@ class Builder(object):
                           '.{}_{}-{}'.format(prefix, self.kernel_arch, postfix))
     if not self.output_path.is_dir():
       self.output_path.mkdir()
+
+    print('dc={} ps={} op={}'.format(self.defconfig, postfix, self.output_path))
 
     self.packed_kernel = self.output_path.joinpath('vmlinux.kpart')
 
@@ -103,7 +114,7 @@ class Builder(object):
         return False
 
 
-  def __print_errors(self, prefix, errors):
+  def __print_errors(self, prefix, errors, show_prompt):
     print('***********************************************************')
     print('*')
     if errors:
@@ -113,14 +124,14 @@ class Builder(object):
         print(l)
       print('*')
       print('***********************************************************')
-      if not self.prompt_user('Would you like to continue?'):
+      if show_prompt and not self.prompt_user('Would you like to continue?'):
         raise subprocess.CalledProcessError(1, args)
     else:
       print('*              {} BUILD IS CLEAN'.format(prefix))
       print('*')
       print('***********************************************************')
 
-  def __run_command(self, args, fail_on_stderr = False):
+  def __run_command(self, args, fail_on_stderr=False, show_prompt=True):
     print('')
     print('#############################################################')
     print('#')
@@ -142,7 +153,7 @@ class Builder(object):
     stdout_thread.join()
     stderr_thread.join()
 
-    drm_re = re.compile('drivers/gpu/drm')
+    drm_re = re.compile('(drivers/gpu/drm|include/drm|include/uapi/drm)')
     drm_stderr = []
     other_stderr = []
     for l in stderr:
@@ -159,8 +170,8 @@ class Builder(object):
       else:
         other_stderr.append(l)
 
-    self.__print_errors('DRM', drm_stderr)
-    self.__print_errors('KERNEL', other_stderr)
+    self.__print_errors('DRM', drm_stderr, show_prompt)
+    self.__print_errors('KERNEL', other_stderr, False)
     if p.returncode != 0:
       if not self.prompt_user('Build failed, would you like to continue?'):
         raise subprocess.CalledProcessError(p.returncode, args)
@@ -208,15 +219,30 @@ class Builder(object):
 
 
   def __make(self):
-    if self.generate_pkg and not self.generate_compile_db:
+    if (self.generate_pkg and
+        not self.kselftest):
       self.__run_make(targets=['bindeb-pkg'])
     elif self.generate_htmldocs:
       self.__run_make(targets=['htmldocs'])
+    elif self.kselftest:
+      self.__run_make(targets=['kselftest'])
     else:
-      self.__run_make(targets=['all'], bear=self.generate_compile_db)
+      self.__run_make(targets=['all'])
+
+    if self.generate_compile_db:
+        self.__run_command(['scripts/gen_compile_commands.py',
+                            '-d', str(self.output_path),
+                            '--log_level', 'INFO'], fail_on_stderr=False,
+                            show_prompt=False)
 
     if self.install_dtbs:
       self.__run_make(targets=['dtbs'])
+
+    if self.install_headers:
+        headers_dst_path = self.output_path.joinpath('headers')
+        self.__run_make(env={ 'INSTALL_HDR_PATH': headers_dst_path },
+                        targets=['headers_install'])
+
 
 
   def __package(self):
@@ -309,13 +335,10 @@ class Builder(object):
 
 
   def do_build(self):
-    if self.generate_compile_db:
-        self.__run_make(targets=['mrproper'])
-
     self.__configure()
     self.__make()
 
-    if not self.generate_compile_db:
+    if not self.kselftest:
         self.__package()
         self.__flash()
 
@@ -327,17 +350,21 @@ def main():
   parser = argparse.ArgumentParser(description='Build a kernel')
   parser.add_argument('--config', help='Optional build config path override',
                       action='append')
-  parser.add_argument('--gen_compile_db', default=False, action='store_true',
-                      help='Use bear to generate a compilation database')
+  parser.add_argument('--skip_gen_compile_db', default=False,
+                      action='store_true',
+                      help='Skip generating a compilation database')
   parser.add_argument('--gen_pkg', default=False, action='store_true',
                       help='Generate deb packages')
+  parser.add_argument('--kselftest', default=False, action='store_true',
+                      help='Do a kselftest build')
   parser.add_argument('--nofail_on_stderr', default=False, action='store_false',
                       help='Fail command on stderr')
   args = parser.parse_args()
 
   for c in args.config:
-    builder = Builder(c, args.gen_compile_db, args.gen_pkg,
-                      not args.nofail_on_stderr)
+    builder = Builder(c, not args.skip_gen_compile_db, args.gen_pkg,
+                      not args.nofail_on_stderr,
+                      args.kselftest)
     builder.do_build()
 
 
