@@ -8,10 +8,12 @@ import configparser
 import os
 import pathlib
 import re
+import stat
 import subprocess
 import tempfile
 import threading
 import time
+import urllib.request
 
 class Builder(object):
 
@@ -50,7 +52,8 @@ class Builder(object):
     self.defconfig = cp.get('build', 'defconfig', raw=True)
     self.config_file = cp.get('build', 'config_file', raw=True)
     self.kernel_arch = cp.get('build', 'kernel_arch', raw=True)
-    self.cross_compile = cp.get('build', 'cross_compile', raw=True)
+    self.compiler = cp.get('build', 'compiler', raw=True)
+    self.compiler_install = cp.get('build', 'compiler_install', raw=True)
     self.jobs = cp.getint('build', 'jobs', raw=True)
 
     self.vbutil_kernel = cp.get('build', 'vbutil_kernel', raw=True)
@@ -180,28 +183,41 @@ class Builder(object):
   def __run_make(self, flags=[], env={}, targets=[], root=False, bear=False):
     new_env = {}
     new_env['ARCH'] = self.kernel_arch
-    new_env['CROSS_COMPILE'] = self.cross_compile
     new_env['O'] = str(self.output_path)
     #new_env['EXTRA_CFLAGS'] = '-Werror'
     new_env.update(env)
 
-    args = []
-    if root:
-      args = ['sudo']
-    if bear:
-      args = args + ['bear']
+    try:
+      old_env_compiler = os.environ.get('COMPILER')
+      if old_env_compiler == None:
+        old_env_compiler = ''
+      os.environ['COMPILER'] = self.compiler
 
-    args = args + ['make']
+      old_env_compiler_path = os.environ.get('COMPILER_INSTALL_PATH')
+      if old_env_compiler_path == None:
+        old_env_compiler_path = ''
+      os.environ['COMPILER_INSTALL_PATH'] = self.compiler_install
 
-    # kernel Makefile is inconsistent with which arguments can be set as env
-    # variables, and which are cmdline assignments. So make all env cmdline
-    # assignments
-    for k,v in new_env.items():
-      args.append('{}={}'.format(k, v))
+      args = []
+      if root:
+        args = ['sudo']
+      if bear:
+        args = args + ['bear']
 
-    args.append('-j{}'.format(self.jobs))
-    args = args + flags +  targets
-    self.__run_command(args, fail_on_stderr=self.fail_on_stderr)
+      args = args + ['./make.cross']
+
+      # kernel Makefile is inconsistent with which arguments can be set as env
+      # variables, and which are cmdline assignments. So make all env cmdline
+      # assignments
+      for k,v in new_env.items():
+        args.append('{}={}'.format(k, v))
+
+      args.append('-j{}'.format(self.jobs))
+      args = args + flags +  targets
+      self.__run_command(args, fail_on_stderr=self.fail_on_stderr)
+    finally:
+      os.environ['COMPILER'] = old_env_compiler
+      os.environ['COMPILER_INSTALL_PATH'] = old_env_compiler_path
 
 
   def __configure(self):
@@ -229,8 +245,17 @@ class Builder(object):
     else:
       self.__run_make(targets=['all'])
 
+    if self.install_modules:
+      modules_dst_path = self.output_path.joinpath('installed_modules')
+      self.__run_make(env={ 'INSTALL_MOD_PATH': modules_dst_path },
+                      targets=['modules_install'])
+      print('Installed modules to {}'.format(modules_dst_path))
+
     if self.generate_compile_db:
-        self.__run_command(['scripts/gen_compile_commands.py',
+        script_loc = 'scripts/gen_compile_commands.py'
+        if not pathlib.Path(script_loc).exists():
+            script_loc = 'scripts/clang-tools/gen_compile_commands.py'
+        self.__run_command([script_loc,
                             '-d', str(self.output_path),
                             '--log_level', 'INFO'], fail_on_stderr=False,
                             show_prompt=False)
@@ -335,15 +360,27 @@ class Builder(object):
 
 
   def do_build(self):
-    self.__configure()
-    self.__make()
+    try:
+      repo = 'https://raw.githubusercontent.com/intel/lkp-tests/'
+      url = repo + 'master/sbin/make.cross'
+      urllib.request.urlretrieve(url, 'make.cross')
 
-    if not self.kselftest:
-        self.__package()
-        self.__flash()
+      st = os.stat('make.cross')
+      os.chmod('make.cross', st.st_mode | stat.S_IEXEC)
 
-    if self.completion_text:
-        print(self.completion_text)
+      self.__configure()
+      self.__make()
+
+      if not self.kselftest:
+          self.__package()
+          self.__flash()
+
+      if self.completion_text:
+          print(self.completion_text)
+
+    finally:
+      #os.unlink('make.cross')
+      print('Finished')
 
 
 def main():
@@ -366,7 +403,6 @@ def main():
                       not args.nofail_on_stderr,
                       args.kselftest)
     builder.do_build()
-
 
 if __name__ == '__main__':
   main()

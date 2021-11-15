@@ -7,7 +7,7 @@ import pathlib
 from build_kernel import Builder
 
 def build_cfg(cfg):
-  cfg_path = os.path.join(str(pathlib.Path.home()), 'ss/build_kernel/configs', cfg)
+  cfg_path = os.path.join(str(pathlib.Path.home()), 's/build_kernel/config', cfg)
   builder = Builder(cfg_path, generate_compile_db=True, generate_pkg=False,
                     fail_on_stderr=True)
   builder.do_build()
@@ -22,7 +22,15 @@ def main():
                       help='Skip x86 builds')
   parser.add_argument('--noall', default=False, action='store_true',
                       help='Skip all*config builds')
+  parser.add_argument('--compile_commands', default=False, action='store_true',
+                      help='Generate compile_commands (x86 allyesconfig)')
+  parser.add_argument('--compile-commands', default=False, action='store_true',
+                      help='Generate compile_commands (x86 allyesconfig)')
   args = parser.parse_args()
+
+  if args.compile_commands == True:
+    build_cfg('allyesconfig_x86.ini')
+    return
 
   if args.noarm == False:
     build_cfg('drm-misc-arm.ini')
@@ -30,7 +38,7 @@ def main():
 
   if args.nox86 == False:
     build_cfg('drm-misc-x86.ini')
-    build_cfg('drm-misc-x86-nofbdev.ini')
+    #build_cfg('drm-misc-x86-nofbdev.ini')
 
   if args.nodocs == False:
     build_cfg('drm-misc-htmldocs.ini')
@@ -38,9 +46,6 @@ def main():
   if args.noall == False:
     build_cfg('allmodconfig_arm64.ini')
     build_cfg('allyesconfig_arm64.ini')
-    build_cfg('allmodconfig_arm.ini')
-    build_cfg('allyesconfig_arm.ini')
-
 
 if __name__ == '__main__':
   main()
